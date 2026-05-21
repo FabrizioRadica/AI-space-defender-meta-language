@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Space Defender</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+  #ui {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; font-family: 'Press Start 2P', monospace;
+    color: #fff; z-index: 10;
+  }
+  #hud {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 20px; font-size: 14px;
+  }
+  #hud .score { color: #0f0; }
+  #hud .lives { color: #f44; }
+  #hud .wave { color: #4af; }
+  #overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.82); pointer-events: auto;
+  }
+  #overlay.hidden { display: none; pointer-events: none; }
+  #overlay h1 { font-size: 28px; color: #0f0; margin-bottom: 8px; text-shadow: 0 0 20px #0f0; }
+  #overlay h2 { font-size: 16px; color: #f44; margin-bottom: 12px; text-shadow: 0 0 14px #f44; }
+  #overlay .sub { font-size: 10px; color: #aaa; margin-bottom: 24px; }
+  #overlay .prompt { font-size: 11px; color: #fff; animation: blink 1s step-end infinite; }
+  #overlay .final-score { font-size: 14px; color: #4af; margin-bottom: 18px; }
+  #overlay .author { font-size: 9px; color: #0f0; margin-bottom: 4px; letter-spacing: 2px; }
+  #overlay .meta { font-size: 8px; color: #888; margin-bottom: 20px; letter-spacing: 1px; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #mobile-controls {
+    position: absolute; bottom: 16px; left: 0; width: 100%;
+    display: none; justify-content: space-between; padding: 0 16px;
+    pointer-events: auto; z-index: 20;
+  }
+  #mobile-controls button {
+    width: 72px; height: 72px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3);
+    background: rgba(255,255,255,0.08); color: #fff; font-size: 28px;
+    font-family: 'Press Start 2P', monospace; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+  }
+  #mobile-controls button:active { background: rgba(255,255,255,0.2); }
+  .dpad { display: flex; gap: 8px; }
+  @media (hover: none) and (pointer: coarse) {
+    #mobile-controls { display: flex; }
+  }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="hud">
+    <div class="score">SCORE <span id="score-val">0</span></div>
+    <div class="wave">WAVE <span id="wave-val">1</span></div>
+    <div class="lives">LIVES <span id="lives-val">3</span></div>
+  </div>
+  <div id="overlay">
+    <h1>SPACE DEFENDER</h1>
+    <div class="author">FABRIZIO RADICA &copy; 2026</div>
+    <div class="meta">SVILUPPATO IN METALINGUAGGIO</div>
+    <div class="sub">&#9650; &#9650; &#9650;</div>
+    <div class="prompt">PRESS SPACE OR TAP TO START</div>
+  </div>
+</div>
+<div id="mobile-controls">
+  <div class="dpad">
+    <button id="btn-left">&#9664;</button>
+    <button id="btn-right">&#9654;</button>
+  </div>
+  <button id="btn-fire">&#9679;</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ─── CONFIG ───
+const CFG = {
+  camSize: 10,
+  player: { y: -7, speed: 8, fireRate: 0.25 },
+  bullet: { speed: 15 },
+  enemyBullet: { speed: 8 },
+  grid: { rows: 5, cols: 11, sx: 1.2, sy: 1.0 },
+  enemy: { hSpeed: 2, stepDown: 0.5, fireRate: 1.5 },
+  poolSize: 60,
+};
+
+// ─── RENDERER ───
+const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000);
+document.body.appendChild(renderer.domElement);
+
+// ─── SCENE & CAMERA ───
+const scene = new THREE.Scene();
+const aspect = window.innerWidth / window.innerHeight;
+const cam = new THREE.OrthographicCamera(
+  -CFG.camSize * aspect, CFG.camSize * aspect,
+  CFG.camSize, -CFG.camSize, 0.1, 1000
+);
+cam.position.set(0, 0, 10);
+
+// ─── RESIZE ───
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h);
+  const a = w / h;
+  cam.left = -CFG.camSize * a;
+  cam.right = CFG.camSize * a;
+  cam.top = CFG.camSize;
+  cam.bottom = -CFG.camSize;
+  cam.updateProjectionMatrix();
+}
+window.addEventListener('resize', onResize);
+
+// ─── SPRITE HELPERS ───
+function makePixelTexture(pixels, w, h) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const id = ctx.createImageData(w, h);
+  for (let i = 0; i < pixels.length; i++) {
+    id.data[i * 4] = pixels[i][0];
+    id.data[i * 4 + 1] = pixels[i][1];
+    id.data[i * 4 + 2] = pixels[i][2];
+    id.data[i * 4 + 3] = pixels[i][3];
+  }
+  ctx.putImageData(id, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  return tex;
+}
+
+function spriteFromBitmap(bitmap, w, h, color, scale = 1) {
+  const pixels = [];
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      pixels.push(bitmap[y * w + x] ? [...color, 255] : [0, 0, 0, 0]);
+  const tex = makePixelTexture(pixels, w, h);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(scale, scale * (h / w), 1);
+  return sp;
+}
+
+// ─── BITMAPS (simple pixel art) ───
+const SHIP_W = 11, SHIP_H = 8;
+const SHIP_BMP = [
+  0,0,0,0,0,1,0,0,0,0,0,
+  0,0,0,0,1,1,1,0,0,0,0,
+  0,0,0,0,1,1,1,0,0,0,0,
+  0,0,0,1,1,1,1,1,0,0,0,
+  0,0,1,1,1,1,1,1,1,0,0,
+  0,1,1,1,1,1,1,1,1,1,0,
+  1,1,1,1,1,1,1,1,1,1,1,
+  1,1,0,1,1,1,1,1,0,1,1,
+];
+
+const INV_W = 8, INV_H = 8;
+const INV_BMP = [
+  [
+    0,0,1,0,0,1,0,0,
+    0,0,0,1,1,0,0,0,
+    0,0,1,1,1,1,0,0,
+    0,1,1,0,0,1,1,0,
+    1,1,1,1,1,1,1,1,
+    1,0,1,1,1,1,0,1,
+    1,0,1,0,0,1,0,1,
+    0,0,0,1,1,0,0,0,
+  ],
+  [
+    0,0,0,1,1,0,0,0,
+    0,0,1,1,1,1,0,0,
+    0,1,1,1,1,1,1,0,
+    1,1,0,1,1,0,1,1,
+    1,1,1,1,1,1,1,1,
+    0,0,1,0,0,1,0,0,
+    0,1,0,1,1,0,1,0,
+    1,0,1,0,0,1,0,1,
+  ],
+  [
+    0,0,1,0,0,1,0,0,
+    1,0,0,1,1,0,0,1,
+    1,0,1,1,1,1,0,1,
+    1,1,1,0,0,1,1,1,
+    1,1,1,1,1,1,1,1,
+    0,1,1,1,1,1,1,0,
+    0,0,1,0,0,1,0,0,
+    0,1,0,0,0,0,1,0,
+  ],
+];
+
+const INV_COLORS = [
+  [255, 50, 50],
+  [50, 255, 100],
+  [100, 150, 255],
+];
+
+// ─── INPUT MANAGER ───
+const input = { left: false, right: false, fire: false, anyStart: false };
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') { e.preventDefault(); input.anyStart = true; }
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Mobile
+function mobileBtn(id, action) {
+  const el = document.getElementById(id);
+  const start = () => { input[action] = true; input.anyStart = true; };
+  const end = () => { input[action] = false; };
+  el.addEventListener('touchstart', e => { e.preventDefault(); start(); }, { passive: false });
+  el.addEventListener('touchend', e => { e.preventDefault(); end(); }, { passive: false });
+  el.addEventListener('mousedown', start);
+  el.addEventListener('mouseup', end);
+}
+mobileBtn('btn-left', 'left');
+mobileBtn('btn-right', 'right');
+mobileBtn('btn-fire', 'fire');
+
+// Also tap overlay to start
+document.getElementById('overlay').addEventListener('click', () => { input.anyStart = true; });
+document.getElementById('overlay').addEventListener('touchstart', e => {
+  e.preventDefault(); input.anyStart = true;
+}, { passive: false });
+
+// Gamepad
+function pollGamepad() {
+  const gp = navigator.getGamepads ? navigator.getGamepads()[0] : null;
+  if (!gp) return;
+  const lx = gp.axes[0] || 0;
+  input.gpLeft = lx < -0.3;
+  input.gpRight = lx > 0.3;
+  input.gpFire = gp.buttons[0] && gp.buttons[0].pressed;
+  if (input.gpFire) input.anyStart = true;
+}
+
+function getInput() {
+  pollGamepad();
+  return {
+    left: keys['ArrowLeft'] || keys['KeyA'] || input.left || input.gpLeft,
+    right: keys['ArrowRight'] || keys['KeyD'] || input.right || input.gpRight,
+    fire: keys['Space'] || input.fire || input.gpFire,
+    anyStart: input.anyStart,
+  };
+}
+
+// ─── OBJECT POOL ───
+class Pool {
+  constructor(factory, max) {
+    this.items = [];
+    this.factory = factory;
+    for (let i = 0; i < max; i++) {
+      const obj = factory();
+      obj.userData.active = false;
+      obj.visible = false;
+      scene.add(obj);
+      this.items.push(obj);
+    }
+  }
+  get() {
+    const obj = this.items.find(o => !o.userData.active);
+    if (!obj) return null;
+    obj.userData.active = true;
+    obj.visible = true;
+    return obj;
+  }
+  release(obj) {
+    obj.userData.active = false;
+    obj.visible = false;
+  }
+  releaseAll() {
+    this.items.forEach(o => this.release(o));
+  }
+  forEach(fn) {
+    this.items.forEach(o => { if (o.userData.active) fn(o); });
+  }
+}
+
+// ─── BULLET POOLS ───
+function makeBulletSprite(color) {
+  const c = document.createElement('canvas');
+  c.width = 2; c.height = 6;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, 2, 6);
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(0.25, 0.6, 1);
+  return sp;
+}
+
+const playerBullets = new Pool(() => makeBulletSprite('#0f0'), CFG.poolSize);
+const enemyBullets = new Pool(() => makeBulletSprite('#f44'), CFG.poolSize);
+
+// ─── EXPLOSION POOL ───
+function makeExplosionSprite() {
+  const c = document.createElement('canvas');
+  c.width = 8; c.height = 8;
+  const ctx = c.getContext('2d');
+  const pattern = [
+    0,0,0,1,1,0,0,0,
+    0,0,1,1,1,1,0,0,
+    0,1,0,1,1,0,1,0,
+    1,1,1,0,0,1,1,1,
+    1,1,1,0,0,1,1,1,
+    0,1,0,1,1,0,1,0,
+    0,0,1,1,1,1,0,0,
+    0,0,0,1,1,0,0,0,
+  ];
+  const id = ctx.createImageData(8, 8);
+  for (let i = 0; i < 64; i++) {
+    id.data[i*4]   = 255;
+    id.data[i*4+1] = pattern[i] ? 200 : 100;
+    id.data[i*4+2] = 0;
+    id.data[i*4+3] = pattern[i] ? 255 : 120;
+  }
+  ctx.putImageData(id, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(1, 1, 1);
+  sp.userData.timer = 0;
+  return sp;
+}
+const explosions = new Pool(makeExplosionSprite, 20);
+
+function spawnExplosion(x, y) {
+  const e = explosions.get();
+  if (!e) return;
+  e.position.set(x, y, 0);
+  e.userData.timer = 0.3;
+  e.scale.set(1, 1, 1);
+}
+
+// ─── STARS ───
+const starGeo = new THREE.BufferGeometry();
+const starCount = 120;
+const starPos = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount; i++) {
+  starPos[i*3]   = (Math.random() - 0.5) * 30;
+  starPos[i*3+1] = (Math.random() - 0.5) * 24;
+  starPos[i*3+2] = -1;
+}
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+const starMat = new THREE.PointsMaterial({ color: 0x888888, size: 0.06 });
+const stars = new THREE.Points(starGeo, starMat);
+scene.add(stars);
+
+// ─── PLAYER ───
+const player = spriteFromBitmap(SHIP_BMP, SHIP_W, SHIP_H, [0, 255, 100], 1.2);
+player.position.set(0, CFG.player.y, 0);
+scene.add(player);
+
+// ─── ENEMIES ───
+let enemies = [];
+let enemyDir = 1;
+let enemySpeed = CFG.enemy.hSpeed;
+let enemyFireTimer = 0;
+let wave = 1;
+
+function spawnEnemies() {
+  enemies.forEach(e => scene.remove(e));
+  enemies = [];
+  const { rows, cols, sx, sy } = CFG.grid;
+  const offX = -(cols - 1) * sx / 2;
+  const offY = 5;
+  for (let r = 0; r < rows; r++) {
+    const type = r < 1 ? 2 : r < 3 ? 1 : 0;
+    const color = INV_COLORS[type];
+    for (let c = 0; c < cols; c++) {
+      const sp = spriteFromBitmap(INV_BMP[type], INV_W, INV_H, color, 0.9);
+      sp.position.set(offX + c * sx, offY - r * sy, 0);
+      sp.userData.type = type;
+      sp.userData.alive = true;
+      sp.userData.row = r;
+      sp.userData.col = c;
+      scene.add(sp);
+      enemies.push(sp);
+    }
+  }
+  enemyDir = 1;
+  enemySpeed = CFG.enemy.hSpeed + (wave - 1) * 0.4;
+  enemyFireTimer = 0;
+}
+
+// ─── COLLISION (AABB) ───
+function aabb(a, aW, aH, b, bW, bH) {
+  return Math.abs(a.x - b.x) < (aW + bW) / 2 &&
+         Math.abs(a.y - b.y) < (aH + bH) / 2;
+}
+
+// ─── GAME STATE ───
+let state = 'title'; // title | playing | gameover
+let score = 0, lives = 3;
+let fireTimer = 0;
+
+const scoreEl = document.getElementById('score-val');
+const livesEl = document.getElementById('lives-val');
+const waveEl = document.getElementById('wave-val');
+const overlay = document.getElementById('overlay');
+
+function updateHUD() {
+  scoreEl.textContent = score;
+  livesEl.textContent = lives;
+  waveEl.textContent = wave;
+}
+
+function showOverlay(title, sub, prompt, showCredits) {
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = '';
+  if (title) { const h = document.createElement('h1'); h.textContent = title; overlay.appendChild(h); }
+  if (showCredits) {
+    const a = document.createElement('div'); a.className = 'author'; a.innerHTML = 'FABRIZIO RADICA &copy; 2026'; overlay.appendChild(a);
+    const m = document.createElement('div'); m.className = 'meta'; m.textContent = 'SVILUPPATO IN METALINGUAGGIO'; overlay.appendChild(m);
+  }
+  if (sub) { const s = document.createElement('div'); s.className = 'final-score'; s.textContent = sub; overlay.appendChild(s); }
+  if (prompt) { const p = document.createElement('div'); p.className = 'prompt'; p.textContent = prompt; overlay.appendChild(p); }
+}
+
+function hideOverlay() { overlay.classList.add('hidden'); }
+
+function startGame() {
+  score = 0; lives = 3; wave = 1;
+  player.position.set(0, CFG.player.y, 0);
+  player.visible = true;
+  playerBullets.releaseAll();
+  enemyBullets.releaseAll();
+  explosions.releaseAll();
+  spawnEnemies();
+  updateHUD();
+  hideOverlay();
+  state = 'playing';
+}
+
+function gameOver() {
+  state = 'gameover';
+  showOverlay('GAME OVER', `FINAL SCORE: ${score}`, 'PRESS SPACE OR TAP TO RESTART');
+}
+
+function nextWave() {
+  wave++;
+  playerBullets.releaseAll();
+  enemyBullets.releaseAll();
+  spawnEnemies();
+  updateHUD();
+}
+
+// ─── STAR SCROLL ───
+function scrollStars(dt) {
+  const pos = starGeo.attributes.position.array;
+  for (let i = 0; i < starCount; i++) {
+    pos[i*3+1] -= 1.5 * dt;
+    if (pos[i*3+1] < -12) pos[i*3+1] = 12;
+  }
+  starGeo.attributes.position.needsUpdate = true;
+}
+
+// ─── UPDATE ───
+const clock = new THREE.Clock();
+
+function update() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const inp = getInput();
+
+  scrollStars(dt);
+
+  // Explosions
+  explosions.forEach(e => {
+    e.userData.timer -= dt;
+    const t = e.userData.timer;
+    e.scale.set(1 + (0.3 - t), 1 + (0.3 - t), 1);
+    e.material.opacity = t / 0.3;
+    if (t <= 0) explosions.release(e);
+  });
+
+  if (state === 'title' || state === 'gameover') {
+    if (inp.anyStart) {
+      input.anyStart = false;
+      startGame();
+    }
+    return;
+  }
+  input.anyStart = false;
+
+  // ─ Player movement ─
+  const screenRight = CFG.camSize * (window.innerWidth / window.innerHeight) - 0.6;
+  let dx = 0;
+  if (inp.left) dx -= 1;
+  if (inp.right) dx += 1;
+  player.position.x += dx * CFG.player.speed * dt;
+  player.position.x = Math.max(-screenRight, Math.min(screenRight, player.position.x));
+
+  // ─ Player shooting ─
+  fireTimer -= dt;
+  if (inp.fire && fireTimer <= 0) {
+    fireTimer = CFG.player.fireRate;
+    const b = playerBullets.get();
+    if (b) b.position.set(player.position.x, player.position.y + 0.5, 0);
+  }
+
+  // ─ Player bullets ─
+  playerBullets.forEach(b => {
+    b.position.y += CFG.bullet.speed * dt;
+    if (b.position.y > 12) playerBullets.release(b);
+  });
+
+  // ─ Enemy movement ─
+  let edgeHit = false;
+  const aliveEnemies = enemies.filter(e => e.userData.alive);
+  const speedMult = 1 + (1 - aliveEnemies.length / (CFG.grid.rows * CFG.grid.cols)) * 2;
+
+  aliveEnemies.forEach(e => {
+    e.position.x += enemyDir * enemySpeed * speedMult * dt;
+  });
+
+  aliveEnemies.forEach(e => {
+    if (Math.abs(e.position.x) > screenRight - 0.3) edgeHit = true;
+  });
+
+  if (edgeHit) {
+    enemyDir *= -1;
+    aliveEnemies.forEach(e => { e.position.y -= CFG.enemy.stepDown; });
+  }
+
+  // ─ Enemy shooting ─
+  enemyFireTimer -= dt;
+  if (enemyFireTimer <= 0 && aliveEnemies.length > 0) {
+    enemyFireTimer = CFG.enemy.fireRate / (1 + (wave - 1) * 0.15);
+    const shooter = aliveEnemies[Math.floor(Math.random() * aliveEnemies.length)];
+    const b = enemyBullets.get();
+    if (b) b.position.set(shooter.position.x, shooter.position.y - 0.5, 0);
+  }
+
+  // ─ Enemy bullets ─
+  enemyBullets.forEach(b => {
+    b.position.y -= CFG.enemyBullet.speed * dt;
+    if (b.position.y < -12) enemyBullets.release(b);
+  });
+
+  // ─ Collision: player bullets vs enemies ─
+  playerBullets.forEach(b => {
+    aliveEnemies.forEach(e => {
+      if (aabb(b.position, 0.25, 0.6, e.position, 0.8, 0.8)) {
+        playerBullets.release(b);
+        e.userData.alive = false;
+        e.visible = false;
+        spawnExplosion(e.position.x, e.position.y);
+        const pts = [30, 20, 10];
+        score += pts[e.userData.type] || 10;
+        updateHUD();
+      }
+    });
+  });
+
+  // ─ Collision: enemy bullets vs player ─
+  enemyBullets.forEach(b => {
+    if (aabb(b.position, 0.25, 0.6, player.position, 1.0, 0.8)) {
+      enemyBullets.release(b);
+      spawnExplosion(player.position.x, player.position.y);
+      lives--;
+      updateHUD();
+      if (lives <= 0) {
+        player.visible = false;
+        gameOver();
+      }
+    }
+  });
+
+  // ─ Enemies reach player line ─
+  aliveEnemies.forEach(e => {
+    if (e.position.y <= CFG.player.y + 0.5) {
+      lives = 0;
+      updateHUD();
+      player.visible = false;
+      gameOver();
+    }
+  });
+
+  // ─ Wave cleared ─
+  if (aliveEnemies.length === 0 && state === 'playing') {
+    nextWave();
+  }
+}
+
+// ─── GAME LOOP ───
+function loop() {
+  requestAnimationFrame(loop);
+  update();
+  renderer.render(scene, cam);
+}
+
+showOverlay('SPACE DEFENDER', null, 'PRESS SPACE OR TAP TO START', true);
+updateHUD();
+loop();
+</script>
+</body>
+</html>
