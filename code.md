@@ -25,7 +25,6 @@ ENGINE
     VERSION r180
     LANGUAGE JavaScript
     MODULE_SYSTEM ESModules
-    BUNDLER Vite
     TARGET_PLATFORM
     {
         Desktop
