@@ -40,7 +40,8 @@ RENDERING
 
     ANTIALIAS false
     ALPHA false
-
+    VSYNC true
+    FPS 60 (!fixed)
     SHADOWS false
 
     PIXEL_RATIO auto
