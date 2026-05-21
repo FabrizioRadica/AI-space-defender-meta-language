@@ -114,6 +114,7 @@ const cam = new THREE.OrthographicCamera(
 cam.position.set(0, 0, 10);
 
 // ─── RESIZE ───
+let lastPortrait = window.innerWidth < window.innerHeight;
 function onResize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h);
@@ -123,6 +124,14 @@ function onResize() {
   cam.top = CFG.camSize;
   cam.bottom = -CFG.camSize;
   cam.updateProjectionMatrix();
+  // Respawn enemies if orientation flipped during gameplay
+  const nowPortrait = w < h;
+  if (nowPortrait !== lastPortrait && state === 'playing') {
+    playerBullets.releaseAll();
+    enemyBullets.releaseAll();
+    spawnEnemies();
+  }
+  lastPortrait = nowPortrait;
 }
 window.addEventListener('resize', onResize);
 
@@ -381,14 +390,21 @@ let wave = 1;
 function spawnEnemies() {
   enemies.forEach(e => scene.remove(e));
   enemies = [];
-  const { rows, cols, sx, sy } = CFG.grid;
+  const a = window.innerWidth / window.innerHeight;
+  const portrait = a < 1;
+  // Adapt grid to screen shape
+  const cols = portrait ? 7 : CFG.grid.cols;
+  const rows = portrait ? 4 : CFG.grid.rows;
+  const sx = portrait ? 0.95 : CFG.grid.sx;
+  const sy = portrait ? 0.85 : CFG.grid.sy;
+  const sprScale = portrait ? 0.7 : 0.9;
   const offX = -(cols - 1) * sx / 2;
-  const offY = 5;
+  const offY = portrait ? 4 : 5;
   for (let r = 0; r < rows; r++) {
-    const type = r < 1 ? 2 : r < 3 ? 1 : 0;
+    const type = r < 1 ? 2 : r < Math.ceil(rows * 0.5) ? 1 : 0;
     const color = INV_COLORS[type];
     for (let c = 0; c < cols; c++) {
-      const sp = spriteFromBitmap(INV_BMP[type], INV_W, INV_H, color, 0.9);
+      const sp = spriteFromBitmap(INV_BMP[type], INV_W, INV_H, color, sprScale);
       sp.position.set(offX + c * sx, offY - r * sy, 0);
       sp.userData.type = type;
       sp.userData.alive = true;
@@ -527,19 +543,24 @@ function update() {
   // ─ Enemy movement ─
   let edgeHit = false;
   const aliveEnemies = enemies.filter(e => e.userData.alive);
-  const speedMult = 1 + (1 - aliveEnemies.length / (CFG.grid.rows * CFG.grid.cols)) * 2;
+  const totalEnemies = enemies.length;
+  const speedMult = 1 + (1 - aliveEnemies.length / totalEnemies) * 2;
+  const curAspect = window.innerWidth / window.innerHeight;
+  const isPortrait = curAspect < 1;
+  const edgeMargin = isPortrait ? 0.6 : 0.3;
+  const stepDown = isPortrait ? 0.25 : CFG.enemy.stepDown;
 
   aliveEnemies.forEach(e => {
     e.position.x += enemyDir * enemySpeed * speedMult * dt;
   });
 
   aliveEnemies.forEach(e => {
-    if (Math.abs(e.position.x) > screenRight - 0.3) edgeHit = true;
+    if (Math.abs(e.position.x) > screenRight - edgeMargin) edgeHit = true;
   });
 
   if (edgeHit) {
     enemyDir *= -1;
-    aliveEnemies.forEach(e => { e.position.y -= CFG.enemy.stepDown; });
+    aliveEnemies.forEach(e => { e.position.y -= stepDown; });
   }
 
   // ─ Enemy shooting ─
